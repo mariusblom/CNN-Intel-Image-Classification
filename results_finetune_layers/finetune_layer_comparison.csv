@@ -1,0 +1,4 @@
+finetune_from,trainable_params,total_params,best_val_acc,final_val_acc,total_time_sec
+layer2,11022086,11179590,0.939,0.9293,605.2
+layer3,10496518,11179590,0.941,0.925,562.5
+layer4,8396806,11179590,0.941,0.933,541.4

@@ -1,0 +1,4 @@
+mode,epochs,batch_size,optimizer,lr,weight_decay,frozen_layers,trainable_layers
+scratch,30,64,Adam,0.001,0.0001,"keine – alle ~11,18 Mio. Parameter (6 Klassen) trainierbar","gesamtes Netz (conv1, bn1, layer1-4, fc)"
+feature_extractor,15,64,Adam,0.001,0.0001,"conv1, bn1, layer1, layer2, layer3, layer4 (gesamtes Backbone)","nur fc (neuer Klassifikationskopf, 512 -> 6 Klassen)"
+finetune,15,64,Adam,0.0001,0.0001,"conv1, bn1, layer1, layer2, layer3","layer4, fc (~8,4 Mio. Parameter)"
