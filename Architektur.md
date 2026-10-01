@@ -1,3 +1,4 @@
+```mermaid
 graph TD
     subgraph Data_Pipeline [1. Daten-Pipeline]
         A[Intel Image Dataset<br/>150x150 px | 6 Klassen] --> B[Data Preprocessing & Augmentation]
@@ -28,3 +29,4 @@ graph TD
         K --> O[Klassifikation<br/>6 Klassen]
         O --> P[Klassen: buildings, forest, glacier,<br/>mountain, sea, street]
     end
+```
