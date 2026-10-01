@@ -1,0 +1,16 @@
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# Datensätze & ZIPs
+intel_data/
+results_cnn.zip
+
+# Ergebnisordner
+results_finetune_layers/
+results_intel/
+
+# Virtuelle Umgebungen & IDE-Daten (falls vorhanden)
+.venv/
+venv/
+.vscode/
