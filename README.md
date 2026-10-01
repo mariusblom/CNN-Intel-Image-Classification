@@ -56,7 +56,7 @@ python run_intel_experiments.py --data_root ./intel_data --out_dir ./results_int
 
 ## 3. Hyperparameter je Trainingsstrategie
 
-### c) Training From Scratch
+### a) Training From Scratch
 
 | Hyperparameter | Wert |
 |---|---|
@@ -72,7 +72,7 @@ python run_intel_experiments.py --data_root ./intel_data --out_dir ./results_int
 
 *Begründung:* Ohne ImageNet-Vorwissen muss das Netz alle Merkmale (Kanten, Texturen, Objektteile) selbst erlernen → mehr Epochen und mehr Daten nötig als bei den beiden Transfer-Learning-Varianten.
 
-### d) Transfer Learning (Feature Extractor)
+### b) Transfer Learning (Feature Extractor)
 
 | Hyperparameter | Wert |
 |---|---|
@@ -87,7 +87,7 @@ python run_intel_experiments.py --data_root ./intel_data --out_dir ./results_int
 
 *Begründung:* Die im Backbone gespeicherten allgemeinen Bildmerkmale werden unverändert übernommen; nur der neue Klassifikationskopf wird trainiert → sehr wenige trainierbare Parameter, kurze Trainingszeit, funktioniert bereits mit wenig Daten.
 
-### e) Fine-Tuning
+### c) Fine-Tuning
 
 | Hyperparameter | Wert |
 |---|---|
