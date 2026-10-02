@@ -156,5 +156,4 @@ und speichert in `results_intel/`:
 
 Diese Tendenzen sind typische Literaturbefunde für Transfer Learning bei
 mittelgroßen Datensätzen (~14 Tsd. Bilder) mit moderatem Domain-Shift zu
-ImageNet – die tatsächlichen Zahlen aus euren Läufen können natürlich
-abweichen und sollten für die Präsentation verwendet werden.
+ImageNet.
