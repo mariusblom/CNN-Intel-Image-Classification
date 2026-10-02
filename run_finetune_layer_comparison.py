@@ -12,7 +12,8 @@ Alle übrigen Hyperparameter (Epochen, Batch-Size, Lernrate, Optimizer) werden
 unverändert aus config.FINETUNE übernommen, nur finetune_from wird variiert.
 
 Beispielaufruf:
-    python run_finetune_layer_comparison.py --data_root ./intel_data --variants layer2 layer3 layer4
+    python3 run_finetune_layer_comparison.py --data_root ./intel_data \
+        --out_dir ./results_finetune_layers
 """
 
 import argparse
@@ -28,7 +29,7 @@ from sklearn.metrics import confusion_matrix
 from config import FINETUNE, DATASET_INFO
 from data_utils import get_intel_dataloaders
 from model_factory import build_model
-from train import train_model
+from train import train_model, evaluate
 
 FINETUNE_VARIANTS = ["layer2", "layer3", "layer4"]
 
@@ -49,14 +50,16 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    train_loader, val_loader, num_classes, class_names = get_intel_dataloaders(
+    # val_loader = Split aus seg_train (Lernkurven/Monitoring während des Trainings).
+    # test_loader = seg_test, wird unten pro Variante NACH train_model() genau einmal ausgewertet.
+    train_loader, val_loader, test_loader, num_classes, class_names = get_intel_dataloaders(
         args.data_root, batch_size=FINETUNE["batch_size"], train_fraction=1.0
     )
-    print(f"Datensatz: {len(train_loader.dataset)} Trainingsbilder, "
-          f"{num_classes} Klassen: {class_names}")
+    print(f"Datensatz: {len(train_loader.dataset)} Trainings- / {len(val_loader.dataset)} Val- / "
+          f"{len(test_loader.dataset)} Testbilder, {num_classes} Klassen: {class_names}")
 
     all_results = []
-    trained_models = {}  # variant -> model (für Konfusionsmatrizen)
+    trained_models = {}  # variant -> model (für Konfusionsmatrizen auf dem Testset)
 
     for variant in args.variants:
         print(f"\n=== Fine-Tuning ab {variant} ===")
@@ -66,6 +69,12 @@ def main():
             mode=f"finetune_from_{variant}", train_fraction=1.0,
             epochs=FINETUNE["epochs"], lr=FINETUNE["lr"], device=args.device,
         )
+
+        test_metrics = evaluate(model, test_loader, device=args.device)
+        result.test_acc = test_metrics["accuracy"]
+        result.test_loss = test_metrics["loss"]
+        print(f"  -> Finale Test-Accuracy (ab {variant}): {result.test_acc:.3f}")
+
         all_results.append((variant, result))
         trained_models[variant] = model
 
@@ -75,7 +84,7 @@ def main():
     _plot_learning_curves(all_results, out_dir / "finetune_layer_lernkurven.png")
 
     for variant, model in trained_models.items():
-        _plot_confusion_matrix(model, val_loader, class_names,
+        _plot_confusion_matrix(model, test_loader, class_names,
                                 out_dir / f"finetune_layer_konfusionsmatrix_{variant}.png",
                                 variant, device=args.device)
 
@@ -86,21 +95,24 @@ def _save_csv(results, path):
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["finetune_from", "trainable_params", "total_params",
-                          "best_val_acc", "final_val_acc", "total_time_sec"])
+                          "best_val_acc", "final_val_acc",
+                          "test_acc", "test_loss", "total_time_sec"])
         for variant, r in results:
             writer.writerow([variant, r.trainable_params, r.total_params,
                               round(r.best_val_acc, 4), round(r.final_val_acc, 4),
+                              round(r.test_acc, 4) if r.test_acc is not None else "",
+                              round(r.test_loss, 4) if r.test_loss is not None else "",
                               round(r.total_time_sec, 1)])
 
 
 def _plot_summary_bar(results, path):
     variants = [v for v, _ in results]
-    accs = [r.best_val_acc for _, r in results]
+    accs = [r.test_acc for _, r in results]
     times = [r.total_time_sec for _, r in results]
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     axes[0].bar(variants, accs, color="#4c72b0")
-    axes[0].set_ylabel("Beste Test-Accuracy"); axes[0].set_title("Genauigkeit je Freeze-Tiefe")
+    axes[0].set_ylabel("Test-Accuracy"); axes[0].set_title("Genauigkeit je Freeze-Tiefe (finales Testset)")
     axes[1].bar(variants, times, color="#55a868")
     axes[1].set_ylabel("Trainingszeit (s)"); axes[1].set_title("Trainingszeit je Freeze-Tiefe")
     for ax in axes:

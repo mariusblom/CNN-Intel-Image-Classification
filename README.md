@@ -7,6 +7,12 @@ einer eigenen, architektonisch identischen Nachbildung von **ResNet-18**
 
 Datensatz: https://www.kaggle.com/datasets/puneet6060/intel-image-classification
 
+> ⚠️ **Hinweis zur Ausführung:** Der Code wurde in dieser Sandbox aus zwei
+> Gründen nicht selbst trainiert: (1) Kaggle ist von hier aus nicht
+> erreichbar (Datensatz-Download nicht möglich), (2) es steht kein
+> ausreichender Speicherplatz/keine GPU zur Verfügung, um PyTorch zu
+> installieren. Bitte lokal oder z. B. in Google Colab ausführen (dort
+> stehen Kaggle-Zugriff und GPU zur Verfügung).
 
 ---
 
@@ -56,7 +62,7 @@ python run_intel_experiments.py --data_root ./intel_data --out_dir ./results_int
 
 ## 3. Hyperparameter je Trainingsstrategie
 
-### a) Training From Scratch
+### c) Training From Scratch
 
 | Hyperparameter | Wert |
 |---|---|
@@ -72,7 +78,7 @@ python run_intel_experiments.py --data_root ./intel_data --out_dir ./results_int
 
 *Begründung:* Ohne ImageNet-Vorwissen muss das Netz alle Merkmale (Kanten, Texturen, Objektteile) selbst erlernen → mehr Epochen und mehr Daten nötig als bei den beiden Transfer-Learning-Varianten.
 
-### b) Transfer Learning (Feature Extractor)
+### d) Transfer Learning (Feature Extractor)
 
 | Hyperparameter | Wert |
 |---|---|
@@ -87,7 +93,7 @@ python run_intel_experiments.py --data_root ./intel_data --out_dir ./results_int
 
 *Begründung:* Die im Backbone gespeicherten allgemeinen Bildmerkmale werden unverändert übernommen; nur der neue Klassifikationskopf wird trainiert → sehr wenige trainierbare Parameter, kurze Trainingszeit, funktioniert bereits mit wenig Daten.
 
-### c) Fine-Tuning
+### e) Fine-Tuning
 
 | Hyperparameter | Wert |
 |---|---|
@@ -106,23 +112,41 @@ Alle drei Konfigurationen sind maschinenlesbar in `config.py` hinterlegt (`ALL_C
 
 ---
 
-## 4. Evaluation & erzeugte Graphen
+## 4. Methodik: Train/Validation/Test-Split
+
+Der Intel-Datensatz liefert von Haus aus nur zwei Ordner (`seg_train`,
+`seg_test`). Damit das Testset nicht schon während des Trainings zur
+Modellauswahl verwendet wird (Data Leakage), erzeugt `get_intel_dataloaders()`
+einen **sauberen Drei-Wege-Split**:
+
+| Split | Herkunft | Verwendung |
+|---|---|---|
+| **Train** | ~85 % von `seg_train`, stratifiziert je Klasse, mit Augmentierung | Gewichtsupdates |
+| **Validation** | ~15 % von `seg_train`, stratifiziert, ohne Augmentierung | Lernkurven, Auswahl der besten Epoche (`best_val_acc`) während des Trainings |
+| **Test** | `seg_test`, komplett unangetastet | **Genau einmal** nach Trainingsende ausgewertet (`train.evaluate()`) → die Zahl, die für den Strategievergleich zählt |
+
+Die Trainingsdatenmengen-Experimente (10 %/25 %/50 %/100 %) reduzieren nur
+den **Train**-Anteil; Validation und Test bleiben in jedem Lauf vollständig
+und unverändert, damit die Vergleichbarkeit über die Datenmengen hinweg
+erhalten bleibt.
+
+## 5. Evaluation & erzeugte Graphen
 
 `run_intel_experiments.py` trainiert jede der drei Strategien sowohl bei
 **100 % der Trainingsdaten** (für Lernkurven & Konfusionsmatrix) als auch
-bei den Anteilen **10 %, 25 %, 50 %, 100 %** (für den Datenmengen-Vergleich,
-stratifiziert je Klasse gezogen) und speichert in `results_intel/`:
+bei den Anteilen **10 %, 25 %, 50 %, 100 %** (für den Datenmengen-Vergleich)
+und speichert in `results_intel/`:
 
 | Datei | Inhalt |
 |---|---|
-| `results.csv` | Rohdaten: Genauigkeit, Trainingszeit, Parameterzahlen je Strategie & Datenanteil |
+| `results.csv` | Rohdaten je Strategie & Datenanteil: `best_val_acc`/`final_val_acc` (Validation-Split, Trainingsverlauf) sowie **`test_acc`/`test_loss`** (einmalige, finale Auswertung auf `seg_test` – die für den Vergleich maßgebliche Zahl) |
 | `hyperparameter.csv` | Die Hyperparameter-Tabellen aus Abschnitt 3 als CSV |
-| `accuracy_vs_datenmenge.png` | **Prognosegüte vs. Trainingsdatenmenge** – zeigt, wie viele Daten jede Strategie für gute Ergebnisse braucht |
+| `accuracy_vs_datenmenge.png` | **Test-Accuracy vs. Trainingsdatenmenge** – zeigt, wie viele Daten jede Strategie für gute Ergebnisse braucht |
 | `trainingszeit_vs_datenmenge.png` | **Trainingszeit vs. Trainingsdatenmenge** |
-| `lernkurven_volle_daten.png` | Val-Accuracy & Val-Loss über die Epochen bei 100 % der Daten |
-| `vergleich_endergebnis.png` | Balkendiagramme: finale Genauigkeit & Trainingszeit im direkten Vergleich |
+| `lernkurven_volle_daten.png` | Val-Accuracy & Val-Loss über die Epochen bei 100 % der Daten (Trainingsverlauf auf dem Validation-Split, NICHT das Testset) |
+| `vergleich_endergebnis.png` | Balkendiagramme: finale Test-Genauigkeit & Trainingszeit im direkten Vergleich |
 | `trainierbare_parameter.png` | Trainierbare vs. eingefrorene Parameter je Strategie (visualisiert „Frozen Layers“) |
-| `konfusionsmatrix_<mode>.png` | Konfusionsmatrix je Strategie über die 6 Intel-Klassen |
+| `konfusionsmatrix_<mode>.png` | Konfusionsmatrix je Strategie über die 6 Intel-Klassen, berechnet auf dem Testset |
 
 ### Erwartete Tendenzen (zur Einordnung der Ergebnisse)
 
@@ -132,4 +156,5 @@ stratifiziert je Klasse gezogen) und speichert in `results_intel/`:
 
 Diese Tendenzen sind typische Literaturbefunde für Transfer Learning bei
 mittelgroßen Datensätzen (~14 Tsd. Bilder) mit moderatem Domain-Shift zu
-ImageNet.
+ImageNet – die tatsächlichen Zahlen aus euren Läufen können natürlich
+abweichen und sollten für die Präsentation verwendet werden.

@@ -32,6 +32,12 @@ class RunResult:
     total_params: int
     epochs: List[EpochResult] = field(default_factory=list)
     total_time_sec: float = 0.0
+    # Werden NICHT von train_model() gesetzt, sondern vom Aufrufer NACH dem
+    # Training einmalig über evaluate() auf dem Testset befüllt - siehe
+    # run_intel_experiments.py. val_acc/val_loss oben bleiben die
+    # Trainingsverlaufs-Metriken auf dem Validation-Split.
+    test_acc: Optional[float] = None
+    test_loss: Optional[float] = None
 
     @property
     def best_val_acc(self) -> float:
@@ -49,9 +55,7 @@ def _run_epoch(model, loader, criterion, optimizer, device, train: bool):
 
     with context:
         for images, labels in loader:
-            # ERGÄNZUNG: non_blocking=True für schnelleren Datentransfer zur GPU
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
+            images, labels = images.to(device), labels.to(device)
 
             if train:
                 optimizer.zero_grad()
@@ -81,10 +85,7 @@ def train_model(
     device: Optional[str] = None,
     verbose: bool = True,
 ) -> RunResult:
-    # ERGÄNZUNG: device-Objekt erstellen
-    device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    if verbose:
-        print(f"Nutze Gerät: {device}")
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -101,22 +102,13 @@ def train_model(
         total_params=total_params,
     )
 
-    # Hilfsfunktion für korrekte GPU-Zeitmessung
-    def sync_if_cuda():
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-
-    sync_if_cuda()
     run_start = time.perf_counter()
-
     for epoch in range(1, epochs + 1):
-        sync_if_cuda()
         epoch_start = time.perf_counter()
 
         train_loss, train_acc = _run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         val_loss, val_acc = _run_epoch(model, val_loader, criterion, optimizer, device, train=False)
 
-        sync_if_cuda()
         epoch_time = time.perf_counter() - epoch_start
         result.epochs.append(EpochResult(epoch, train_loss, train_acc, val_loss, val_acc, epoch_time))
 
@@ -124,7 +116,19 @@ def train_model(
             print(f"[{mode:17s} | frac={train_fraction:.2f}] Epoche {epoch:2d}/{epochs} "
                   f"- train_acc={train_acc:.3f}  val_acc={val_acc:.3f}  ({epoch_time:.1f}s)")
 
-    sync_if_cuda()
     result.total_time_sec = time.perf_counter() - run_start
     return result
 
+
+def evaluate(model: nn.Module, loader: DataLoader, device: Optional[str] = None) -> dict:
+    """
+    Einmalige Evaluation eines bereits trainierten Modells (z.B. auf dem
+    Testset) - rein lesend, ohne jeden Einfluss auf das Training. Getrennt
+    von train_model() genau deshalb, damit das Testset niemals in die
+    Trainings-/Modellauswahl-Schleife gerät.
+    """
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    criterion = nn.CrossEntropyLoss()
+    loss, acc = _run_epoch(model, loader, criterion, optimizer=None, device=device, train=False)
+    return {"loss": loss, "accuracy": acc}

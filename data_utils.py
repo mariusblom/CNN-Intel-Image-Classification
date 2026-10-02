@@ -85,14 +85,30 @@ def get_intel_dataloaders(
     data_root: str,
     batch_size: int = 64,
     train_fraction: float = 1.0,
+    val_fraction: float = 0.15,
     image_size: int = 224,
-    num_workers: int = 4,
+    num_workers: int = 2,
     seed: int = 42,
 ):
     """
     Lädt den Intel Image Classification Datensatz (Kaggle: puneet6060/intel-image-classification,
     6 Klassen: buildings, forest, glacier, mountain, sea, street; ~14.034 Trainings- und
-    ~3.000 Testbilder, Originalauflösung 150x150 Pixel).
+    ~3.000 Testbilder, Originalauflösung 150x150 Pixel) mit einem SAUBEREN
+    Drei-Wege-Split:
+
+        - train_loader: Teilmenge von seg_train, MIT Augmentierung. Wird für
+          die Gewichtsupdates verwendet.
+        - val_loader:   anderer, disjunkter Teil von seg_train (Anteil
+          `val_fraction`, stratifiziert je Klasse gezogen), OHNE
+          Augmentierung. Dient während des Trainings der Verlaufsbeobachtung
+          (Lernkurven) und der Auswahl der besten Epoche (best_val_acc).
+        - test_loader:  seg_test, komplett unangetastet. Wird NICHT während
+          des Trainings verwendet, sondern NUR EIN EINZIGES MAL danach
+          ausgewertet, um eine unverfälschte, finale Testgenauigkeit zu
+          erhalten (siehe train.evaluate()).
+
+    Dadurch wird vermieden, den eigentlichen Testdatensatz schon während des
+    Trainings zur Modellauswahl heranzuziehen (Data Leakage).
 
     Erwartete Ordnerstruktur nach dem Entpacken des Kaggle-Downloads (Standardlayout des Zips):
         data_root/seg_train/seg_train/<klasse>/*.jpg
@@ -105,31 +121,78 @@ def get_intel_dataloaders(
 
     Returns
     -------
-    train_loader, val_loader, num_classes, class_names
+    train_loader, val_loader, test_loader, num_classes, class_names
     """
     train_dir = Path(data_root) / "seg_train" / "seg_train"
-    val_dir = Path(data_root) / "seg_test" / "seg_test"
+    test_dir = Path(data_root) / "seg_test" / "seg_test"
 
-    if not train_dir.exists() or not val_dir.exists():
+    if not train_dir.exists() or not test_dir.exists():
         raise FileNotFoundError(
-            f"Erwarte '{train_dir}' und '{val_dir}'. Bitte den Intel-Datensatz zuerst von "
+            f"Erwarte '{train_dir}' und '{test_dir}'. Bitte den Intel-Datensatz zuerst von "
             "Kaggle herunterladen und entpacken (siehe Docstring von get_intel_dataloaders)."
         )
 
-    train_ds = datasets.ImageFolder(train_dir, transform=build_transforms(True, image_size))
-    val_ds = datasets.ImageFolder(val_dir, transform=build_transforms(False, image_size))
-    class_names = train_ds.classes
+    # Zwei ImageFolder-Instanzen auf demselben Ordner mit unterschiedlichen
+    # Transforms (Training braucht Augmentierung, Validierung nicht). Die
+    # Sample-Reihenfolge ist bei beiden identisch -> dieselben Indizes passen
+    # auf beide Instanzen.
+    train_ds_aug = datasets.ImageFolder(train_dir, transform=build_transforms(True, image_size))
+    train_ds_eval = datasets.ImageFolder(train_dir, transform=build_transforms(False, image_size))
+    class_names = train_ds_aug.classes
     num_classes = len(class_names)
 
+    train_idx, val_idx = _stratified_train_val_split(train_ds_aug, val_fraction, seed)
+
     if train_fraction < 1.0:
-        train_ds = _stratified_subset(train_ds, train_fraction, seed)
+        train_idx = _stratified_index_fraction(train_ds_aug, train_idx, train_fraction, seed)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+    train_subset = Subset(train_ds_aug, train_idx)
+    val_subset = Subset(train_ds_eval, val_idx)
+    test_ds = datasets.ImageFolder(test_dir, transform=build_transforms(False, image_size))
+
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True,
                                num_workers=num_workers, pin_memory=torch.cuda.is_available())
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False,
                              num_workers=num_workers, pin_memory=torch.cuda.is_available())
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=torch.cuda.is_available())
 
-    return train_loader, val_loader, num_classes, class_names
+    return train_loader, val_loader, test_loader, num_classes, class_names
+
+
+def _stratified_train_val_split(dataset: datasets.ImageFolder, val_fraction: float, seed: int):
+    """Teilt die Indizes von `dataset` je Klasse in zwei disjunkte Mengen (train, val)."""
+    rng = random.Random(seed)
+    indices_by_class = {}
+    for idx, (_, label) in enumerate(dataset.samples):
+        indices_by_class.setdefault(label, []).append(idx)
+
+    train_idx, val_idx = [], []
+    for indices in indices_by_class.values():
+        indices = list(indices)
+        rng.shuffle(indices)
+        k_val = max(1, int(round(len(indices) * val_fraction)))
+        val_idx.extend(indices[:k_val])
+        train_idx.extend(indices[k_val:])
+    return train_idx, val_idx
+
+
+def _stratified_index_fraction(dataset: datasets.ImageFolder, indices, fraction: float, seed: int):
+    """Zieht `fraction` der gegebenen Indizes, stratifiziert je Klasse (für die
+    Trainingsdatenmengen-Experimente; betrifft NUR den Trainingsanteil, nie val/test)."""
+    rng = random.Random(seed + 1)
+    indices_by_class = {}
+    for idx in indices:
+        label = dataset.samples[idx][1]
+        indices_by_class.setdefault(label, []).append(idx)
+
+    selected = []
+    for class_indices in indices_by_class.values():
+        class_indices = list(class_indices)
+        rng.shuffle(class_indices)
+        k = max(1, int(round(len(class_indices) * fraction)))
+        selected.extend(class_indices[:k])
+    return selected
 
 
 class SyntheticImageDataset(Dataset):

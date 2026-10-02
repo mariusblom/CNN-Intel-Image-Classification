@@ -30,7 +30,7 @@ from sklearn.metrics import confusion_matrix
 from config import ALL_CONFIGS, DATASET_INFO
 from data_utils import get_intel_dataloaders
 from model_factory import build_model
-from train import train_model
+from train import train_model, evaluate
 
 MODES = ["scratch", "feature_extractor", "finetune"]
 DATA_FRACTIONS = [0.1, 0.25, 0.5, 1.0]
@@ -52,17 +52,19 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     all_results = []
-    final_models = {}  # mode -> (model, val_loader, class_names)  bei fraction=1.0
+    final_models = {}  # mode -> (model, test_loader, class_names)  bei fraction=1.0
 
     shared_batch_size = ALL_CONFIGS["scratch"]["batch_size"]  # identisch für alle drei Strategien
 
     for fraction in args.fractions:
-        train_loader, val_loader, num_classes, class_names = get_intel_dataloaders(
+        # val_loader = Teil von seg_train (für Lernkurven & beste Epoche).
+        # test_loader = seg_test, wird unten NACH train_model() genau einmal ausgewertet.
+        train_loader, val_loader, test_loader, num_classes, class_names = get_intel_dataloaders(
             args.data_root, batch_size=shared_batch_size, train_fraction=fraction
         )
         print(f"\n=== Trainingsdatenanteil: {fraction:.0%} "
-              f"({len(train_loader.dataset)} von {DATASET_INFO['num_train_images']} Bildern, "
-              f"{num_classes} Klassen: {class_names}) ===")
+              f"({len(train_loader.dataset)} Trainings- / {len(val_loader.dataset)} Val- / "
+              f"{len(test_loader.dataset)} Testbilder, {num_classes} Klassen: {class_names}) ===")
 
         for mode in MODES:
             cfg = ALL_CONFIGS[mode]
@@ -73,10 +75,18 @@ def main():
                 mode=mode, train_fraction=fraction,
                 epochs=cfg["epochs"], lr=cfg["lr"], device=args.device,
             )
+
+            # Einmalige, unverfälschte Testauswertung NACH Abschluss des Trainings.
+            test_metrics = evaluate(model, test_loader, device=args.device)
+            result.test_acc = test_metrics["accuracy"]
+            result.test_loss = test_metrics["loss"]
+            print(f"  -> Finale Test-Accuracy ({mode}, frac={fraction:.2f}): "
+                  f"{result.test_acc:.3f}")
+
             all_results.append(result)
 
             if fraction == 1.0:
-                final_models[mode] = (model, val_loader, class_names)
+                final_models[mode] = (model, test_loader, class_names)
 
     _save_csv(all_results, out_dir / "results.csv")
     _save_hyperparams(out_dir / "hyperparameter.csv")
@@ -100,11 +110,14 @@ def _save_csv(results, path):
         writer = csv.writer(f)
         writer.writerow(["mode", "train_fraction", "num_train_samples",
                           "trainable_params", "total_params",
-                          "best_val_acc", "final_val_acc", "total_time_sec"])
+                          "best_val_acc", "final_val_acc",
+                          "test_acc", "test_loss", "total_time_sec"])
         for r in results:
             writer.writerow([r.mode, r.train_fraction, r.num_train_samples,
                               r.trainable_params, r.total_params,
                               round(r.best_val_acc, 4), round(r.final_val_acc, 4),
+                              round(r.test_acc, 4) if r.test_acc is not None else "",
+                              round(r.test_loss, 4) if r.test_loss is not None else "",
                               round(r.total_time_sec, 1)])
 
 
@@ -120,14 +133,14 @@ def _save_hyperparams(path):
 
 
 def _plot_accuracy_vs_fraction(results, path):
-    df = pd.DataFrame([{"mode": r.mode, "fraction": r.train_fraction, "acc": r.best_val_acc}
+    df = pd.DataFrame([{"mode": r.mode, "fraction": r.train_fraction, "acc": r.test_acc}
                         for r in results])
     plt.figure(figsize=(7, 5))
     for mode in MODES:
         sub = df[df["mode"] == mode].sort_values("fraction")
         plt.plot(sub["fraction"], sub["acc"], marker="o", label=mode)
     plt.xlabel("Anteil der Trainingsdaten")
-    plt.ylabel("Beste Validierungsgenauigkeit")
+    plt.ylabel("Test-Accuracy (seg_test, einmalige Auswertung)")
     plt.title("Prognosegüte vs. Trainingsdatenmenge (Intel Image Classification)")
     plt.legend()
     plt.grid(alpha=0.3)
@@ -160,23 +173,23 @@ def _plot_learning_curves(results, path):
             xs = [e.epoch for e in r.epochs]
             axes[0].plot(xs, [e.val_acc for e in r.epochs], marker="o", label=r.mode)
             axes[1].plot(xs, [e.val_loss for e in r.epochs], marker="o", label=r.mode)
-    axes[0].set_xlabel("Epoche"); axes[0].set_ylabel("Val-Accuracy"); axes[0].set_title("Genauigkeit")
-    axes[1].set_xlabel("Epoche"); axes[1].set_ylabel("Val-Loss"); axes[1].set_title("Loss")
+    axes[0].set_xlabel("Epoche"); axes[0].set_ylabel("Val-Accuracy (Split aus seg_train)"); axes[0].set_title("Genauigkeit")
+    axes[1].set_xlabel("Epoche"); axes[1].set_ylabel("Val-Loss (Split aus seg_train)"); axes[1].set_title("Loss")
     for ax in axes:
         ax.legend(); ax.grid(alpha=0.3)
-    plt.suptitle("Lernkurven bei 100% der Trainingsdaten")
+    plt.suptitle("Lernkurven bei 100% der Trainingsdaten (Validation-Split, nicht das Testset)")
     plt.tight_layout()
     plt.savefig(path, dpi=150)
     plt.close()
 
 
 def _plot_summary_bar(results, path):
-    df = pd.DataFrame([{"mode": r.mode, "acc": r.best_val_acc, "time": r.total_time_sec}
+    df = pd.DataFrame([{"mode": r.mode, "acc": r.test_acc, "time": r.total_time_sec}
                         for r in results if r.train_fraction == 1.0])
     colors = ["#888888", "#4c72b0", "#55a868"]
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     axes[0].bar(df["mode"], df["acc"], color=colors)
-    axes[0].set_ylabel("Beste Validierungsgenauigkeit"); axes[0].set_title("Prognosegüte (100% Daten)")
+    axes[0].set_ylabel("Test-Accuracy"); axes[0].set_title("Prognosegüte (100% Daten, finales Testset)")
     axes[1].bar(df["mode"], df["time"], color=colors)
     axes[1].set_ylabel("Trainingszeit (s)"); axes[1].set_title("Trainingszeit (100% Daten)")
     for ax in axes:
