@@ -86,6 +86,10 @@ def train_model(
     verbose: bool = True,
 ) -> RunResult:
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if device == "cuda":
+        print(f"  Gerät: GPU ({torch.cuda.get_device_name(0)})")
+    else:
+        print("  Gerät: CPU (keine CUDA-GPU erkannt oder device='cpu' erzwungen)")
     model = model.to(device)
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
